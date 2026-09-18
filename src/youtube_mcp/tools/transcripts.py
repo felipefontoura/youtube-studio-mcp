@@ -5,7 +5,7 @@ Uses two strategies:
 - youtube-transcript-api library for public/competitor videos (scraping, no auth needed)
 """
 
-from youtube_mcp.auth import CAPTION_SCOPES
+from youtube_mcp.auth import CAPTION_SCOPE_ALTERNATIVES
 from youtube_mcp.server import auth, mcp, quota
 
 
@@ -18,7 +18,7 @@ def youtube_list_captions(video_id: str) -> dict:
     Args:
         video_id: YouTube video ID
     """
-    auth.require_scopes(CAPTION_SCOPES, "youtube_list_captions")
+    auth.require_any_scope(CAPTION_SCOPE_ALTERNATIVES, "youtube_list_captions")
     quota.consume("list")
     youtube = auth.build_youtube_service()
 
@@ -118,7 +118,8 @@ def _get_transcript_scraping(video_id: str, language: str) -> dict:
 
 def _get_transcript_official(video_id: str, language: str) -> dict:
     """Get transcript using official YouTube Data API (own videos only)."""
-    auth.require_scopes(CAPTION_SCOPES, "youtube_get_transcript(use_official_api)")
+    auth.require_any_scope(CAPTION_SCOPE_ALTERNATIVES,
+                           "youtube_get_transcript(use_official_api)")
     quota.consume("list")
     youtube = auth.build_youtube_service()
 

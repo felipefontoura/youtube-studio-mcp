@@ -37,13 +37,12 @@ SCOPES = [
 # Scopes needed by specific tools. Kept separate from SCOPES on purpose: a token
 # that lacks them must still serve every other tool, so the failure has to be
 # raised by the affected tool and not by authenticate().
+#
+# Comments accept NO alternative — force-ssl or nothing. Captions accept either
+# force-ssl or youtubepartner (a different product), so for captions having ONE
+# of them is enough; requiring both would block a token that works fine.
 COMMENT_SCOPES = [FORCE_SSL]
-CAPTION_SCOPES = [FORCE_SSL, YOUTUBE_PARTNER]
-
-# Scope actually required today for comments/captions (partner scope is a
-# different product and is not what we provision).
-REQUIRED_FOR_COMMENTS = FORCE_SSL
-REQUIRED_FOR_CAPTIONS = FORCE_SSL
+CAPTION_SCOPE_ALTERNATIVES = [FORCE_SSL, YOUTUBE_PARTNER]
 
 DEFAULT_CONFIG_DIR = Path.home() / ".youtube-mcp"
 TOKEN_FILE = "token.json"
@@ -139,9 +138,10 @@ class YouTubeAuth:
     def require_scopes(self, required: list[str], purpose: str) -> None:
         """Raise a clear AuthError when a tool's required scope is missing.
 
-        Called by the affected tool — NOT by authenticate() — so a token that
-        lacks these scopes still serves every other tool instead of failing the
-        whole server.
+        ALL of `required` must be granted. Used where the API accepts no
+        alternative (comments). Called by the affected tool — NOT by
+        authenticate() — so a token that lacks these scopes still serves every
+        other tool instead of failing the whole server.
         """
         missing = self.missing_scopes(required)
         if not missing:
@@ -153,6 +153,24 @@ class YouTubeAuth:
             f"'insufficient authentication scopes'. Fix: re-run the consent flow "
             f"with the full SCOPES list, then replace {self.token_path} or set "
             f"{TOKEN_JSON_ENV}."
+        )
+
+    def require_any_scope(self, alternatives: list[str], purpose: str) -> None:
+        """Raise unless at least ONE of `alternatives` is granted.
+
+        For endpoints that accept a choice of scopes — `captions.list` works with
+        `youtube.force-ssl` OR `youtubepartner`. Demanding both would block a
+        token that works perfectly well.
+        """
+        missing = self.missing_scopes(alternatives)
+        if len(missing) < len(alternatives):
+            return  # at least one alternative is granted (or grant is unknown)
+        raise AuthError(
+            f"{purpose} needs one of these OAuth scopes, and the current token has "
+            f"none: {', '.join(alternatives)}. Nothing else is affected. The call "
+            f"fails with HTTP 403 'insufficient authentication scopes'. Fix: re-run "
+            f"the consent flow with the full SCOPES list, then replace "
+            f"{self.token_path} or set {TOKEN_JSON_ENV}."
         )
 
     def _save_token(self, creds: Credentials):

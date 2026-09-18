@@ -22,11 +22,12 @@ import json
 import pytest
 
 from youtube_mcp.auth import (
-    CAPTION_SCOPES,
+    CAPTION_SCOPE_ALTERNATIVES,
     COMMENT_SCOPES,
     FORCE_SSL,
     SCOPES,
     TOKEN_JSON_ENV,
+    YOUTUBE_PARTNER,
     AuthError,
     YouTubeAuth,
 )
@@ -65,7 +66,7 @@ def test_force_ssl_is_requested_at_consent():
 
 def test_comment_and_caption_scopes_include_force_ssl():
     assert FORCE_SSL in COMMENT_SCOPES
-    assert FORCE_SSL in CAPTION_SCOPES
+    assert FORCE_SSL in CAPTION_SCOPE_ALTERNATIVES
 
 
 def test_granted_scopes_reads_the_token_not_the_request(tmp_path):
@@ -104,6 +105,41 @@ def test_require_scopes_raises_actionable_error(tmp_path):
     # Must say the rest of the server still works, and how to fix it.
     assert "Nothing else is affected" in msg
     assert TOKEN_JSON_ENV in msg
+
+
+def test_captions_accept_force_ssl_without_partner(tmp_path):
+    """Captions need only ONE of the alternatives.
+
+    Regression: `captions.list` works with force-ssl OR youtubepartner, and our
+    real token has force-ssl but not youtubepartner. Treating the two as
+    "all required" blocked a call that works — the guard must not invent a
+    permission requirement the API does not have.
+    """
+    yt_auth = write_token(tmp_path, FIXED_TOKEN)  # force-ssl, no youtubepartner
+    assert YOUTUBE_PARTNER in yt_auth.missing_scopes(CAPTION_SCOPE_ALTERNATIVES)
+    yt_auth.require_any_scope(CAPTION_SCOPE_ALTERNATIVES, "youtube_list_captions")
+
+
+def test_captions_blocked_only_when_no_alternative_granted(tmp_path):
+    yt_auth = write_token(tmp_path, PRODUCTION_TOKEN)  # neither scope
+    with pytest.raises(AuthError) as e:
+        yt_auth.require_any_scope(CAPTION_SCOPE_ALTERNATIVES, "youtube_list_captions")
+    assert "one of these OAuth scopes" in str(e.value)
+
+
+def test_captions_accept_partner_without_force_ssl(tmp_path):
+    token = {**PRODUCTION_TOKEN, "scopes": [*PRODUCTION_TOKEN["scopes"], YOUTUBE_PARTNER]}
+    yt_auth = write_token(tmp_path, token)
+    yt_auth.require_any_scope(CAPTION_SCOPE_ALTERNATIVES, "youtube_list_captions")
+
+
+def test_comments_have_no_alternative_scope(tmp_path):
+    """force-ssl is the ONLY scope commentThreads.list accepts, so youtubepartner
+    alone must not satisfy the comments guard."""
+    token = {**PRODUCTION_TOKEN, "scopes": [*PRODUCTION_TOKEN["scopes"], YOUTUBE_PARTNER]}
+    yt_auth = write_token(tmp_path, token)
+    with pytest.raises(AuthError):
+        yt_auth.require_scopes(COMMENT_SCOPES, "youtube_list_comments")
 
 
 def test_no_false_alarm_when_token_lacks_scopes_key(tmp_path):
