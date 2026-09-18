@@ -1,5 +1,6 @@
 """Comment tools — list, post, and reply to comments."""
 
+from youtube_mcp.auth import COMMENT_SCOPES
 from youtube_mcp.server import auth, mcp, quota
 
 
@@ -16,6 +17,7 @@ def youtube_list_comments(
         max_results: Number of comment threads to return (max 100)
         order: Sort order: "relevance" or "time"
     """
+    auth.require_scopes(COMMENT_SCOPES, "youtube_list_comments")
     quota.consume("list")
     youtube = auth.build_youtube_service()
 
@@ -58,6 +60,7 @@ def youtube_post_comment(video_id: str, text: str) -> dict:
         video_id: YouTube video ID to comment on
         text: Comment text
     """
+    auth.require_scopes(COMMENT_SCOPES, "youtube_post_comment")
     quota.consume("insert")
     youtube = auth.build_youtube_service()
 
@@ -92,6 +95,7 @@ def youtube_reply_to_comment(parent_id: str, text: str) -> dict:
         parent_id: The comment ID to reply to (from youtube_list_comments)
         text: Reply text
     """
+    auth.require_scopes(COMMENT_SCOPES, "youtube_reply_to_comment")
     quota.consume("insert")
     youtube = auth.build_youtube_service()
 

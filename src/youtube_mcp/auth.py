@@ -13,8 +13,20 @@ from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
 from googleapiclient.discovery import build
 
-# All scopes we need across all phases
+# All scopes we need across all phases.
+#
+# `youtube.force-ssl` is MANDATORY for comments and captions. Per Google's
+# discovery document (youtube/v3/rest), `commentThreads.list`, `comments.list`,
+# `commentThreads.insert` and `comments.insert` accept NO alternative scope, and
+# `captions.list`/`captions.download` accept only this or `youtubepartner`. A
+# token without it fails those calls with
+#   HTTP 403 "Request had insufficient authentication scopes"
+# even though `youtube.readonly` is granted and every other tool works.
+FORCE_SSL = "https://www.googleapis.com/auth/youtube.force-ssl"
+YOUTUBE_PARTNER = "https://www.googleapis.com/auth/youtubepartner"
+
 SCOPES = [
+    FORCE_SSL,
     "https://www.googleapis.com/auth/youtube.readonly",
     "https://www.googleapis.com/auth/youtube",
     "https://www.googleapis.com/auth/youtube.upload",
@@ -22,8 +34,25 @@ SCOPES = [
     "https://www.googleapis.com/auth/yt-analytics-monetary.readonly",
 ]
 
+# Scopes needed by specific tools. Kept separate from SCOPES on purpose: a token
+# that lacks them must still serve every other tool, so the failure has to be
+# raised by the affected tool and not by authenticate().
+COMMENT_SCOPES = [FORCE_SSL]
+CAPTION_SCOPES = [FORCE_SSL, YOUTUBE_PARTNER]
+
+# Scope actually required today for comments/captions (partner scope is a
+# different product and is not what we provision).
+REQUIRED_FOR_COMMENTS = FORCE_SSL
+REQUIRED_FOR_CAPTIONS = FORCE_SSL
+
 DEFAULT_CONFIG_DIR = Path.home() / ".youtube-mcp"
 TOKEN_FILE = "token.json"
+
+# Provision the token without filesystem access to config_dir — the token is
+# self-contained (it carries its own client_id/secret/refresh_token), so it can
+# be injected as inline JSON by whoever manages the deployment. Used as the
+# highest-priority source; the file is the fallback.
+TOKEN_JSON_ENV = "YOUTUBE_MCP_TOKEN_JSON"
 
 
 class AuthError(Exception):
@@ -56,15 +85,75 @@ class YouTubeAuth:
         # API key fallback for public-only operations
         self.api_key = api_key or os.environ.get("YOUTUBE_API_KEY")
 
-    def _load_token(self) -> Credentials | None:
-        """Load saved credentials from token file."""
+    def _token_info(self) -> dict | None:
+        """Raw token JSON: the env var wins, the file is the fallback.
+
+        Reading the raw JSON (instead of only constructing Credentials) is what
+        makes it possible to see the scopes that were ACTUALLY granted.
+        """
+        env = os.environ.get(TOKEN_JSON_ENV)
+        if env:
+            try:
+                info = json.loads(env)
+                if isinstance(info, dict) and info:
+                    return info
+            except Exception:
+                pass
         if not self.token_path.exists():
             return None
         try:
-            creds = Credentials.from_authorized_user_file(str(self.token_path), SCOPES)
-            return creds
+            info = json.loads(self.token_path.read_text())
+            return info if isinstance(info, dict) else None
         except Exception:
             return None
+
+    def _load_token(self) -> Credentials | None:
+        """Load saved credentials from the env var or the token file."""
+        info = self._token_info()
+        if not info:
+            return None
+        try:
+            return Credentials.from_authorized_user_info(info, SCOPES)
+        except Exception:
+            return None
+
+    def granted_scopes(self) -> list[str]:
+        """The scopes actually granted on the stored token.
+
+        Read from the raw token JSON on purpose:
+        Credentials.from_authorized_user_info() overwrites `.scopes` with the
+        list we pass in, so `creds.scopes` reports what we ASKED FOR, not what
+        was GRANTED. Trusting it silently hides a missing scope — which is how a
+        token without `youtube.force-ssl` still looks fully authorised.
+        """
+        raw = (self._token_info() or {}).get("scopes")
+        return list(raw) if isinstance(raw, list) else []
+
+    def missing_scopes(self, required: list[str]) -> list[str]:
+        """Required scopes absent from the token. Unknown grant -> [] (no claim)."""
+        granted = self.granted_scopes()
+        if not granted:
+            return []
+        return [s for s in required if s not in granted]
+
+    def require_scopes(self, required: list[str], purpose: str) -> None:
+        """Raise a clear AuthError when a tool's required scope is missing.
+
+        Called by the affected tool — NOT by authenticate() — so a token that
+        lacks these scopes still serves every other tool instead of failing the
+        whole server.
+        """
+        missing = self.missing_scopes(required)
+        if not missing:
+            return
+        raise AuthError(
+            f"{purpose} needs OAuth scope(s) missing from the current token: "
+            f"{', '.join(missing)}. Nothing else is affected. The token was "
+            f"authorised without them, so the call fails with HTTP 403 "
+            f"'insufficient authentication scopes'. Fix: re-run the consent flow "
+            f"with the full SCOPES list, then replace {self.token_path} or set "
+            f"{TOKEN_JSON_ENV}."
+        )
 
     def _save_token(self, creds: Credentials):
         """Save credentials to token file."""
@@ -140,22 +229,30 @@ class YouTubeAuth:
             )
         return build("youtube", "v3", developerKey=self.api_key)
 
+    @property
+    def token_available(self) -> bool:
+        """True when a token can be read from the env var or the file."""
+        return bool(self._token_info())
+
     def status(self) -> dict:
-        """Return current auth status."""
-        creds = self._load_token()
-        if creds and creds.valid:
+        """Current auth status, with granted-vs-required scopes spelled out.
+
+        Reports `scopes` as GRANTED (from the token) and `missing_scopes` as the
+        ones SCOPES asks for but the token lacks — so an insufficient grant is
+        visible here instead of only surfacing as a 403 from one tool.
+        """
+        info = self._token_info()
+        if info:
+            creds = self._load_token()
+            granted = self.granted_scopes()
             return {
-                "authenticated": True,
-                "scopes": creds.scopes or [],
+                "authenticated": bool(creds and creds.valid),
+                "scopes": granted or (list(creds.scopes) if creds and creds.scopes else []),
+                "missing_scopes": self.missing_scopes(SCOPES),
+                "token_source": "env" if os.environ.get(TOKEN_JSON_ENV) else "file",
                 "token_path": str(self.token_path),
-                "expired": False,
-            }
-        if creds and creds.expired:
-            return {
-                "authenticated": False,
-                "expired": True,
-                "has_refresh_token": bool(creds.refresh_token),
-                "token_path": str(self.token_path),
+                "expired": bool(creds and creds.expired),
+                "has_refresh_token": bool(info.get("refresh_token")),
             }
         return {
             "authenticated": False,

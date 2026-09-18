@@ -79,6 +79,51 @@ Enable all three APIs in **APIs & Services > Library**:
 
 Alternatively, set the `YOUTUBE_MCP_CLIENT_SECRET` environment variable to the path of your credentials file.
 
+### Required OAuth scopes
+
+The consent flow requests all scopes the server uses. One of them is easy to
+miss and cannot be substituted:
+
+| Scope | Needed by |
+|---|---|
+| `youtube.force-ssl` | **comments and captions** — mandatory, no alternative |
+| `youtube.readonly` | reading videos, channels, playlists |
+| `youtube.upload` | uploading videos |
+| `yt-analytics.readonly` | Analytics queries |
+| `yt-analytics-monetary.readonly` | revenue figures |
+
+`commentThreads.list`, `comments.list`, `commentThreads.insert`,
+`comments.insert`, `captions.list` and `captions.download` accept **only**
+`youtube.force-ssl` (captions also accept `youtubepartner`, which is a different
+product). A token authorised without it still works for everything else and
+fails those calls with:
+
+```
+HTTP 403 "Request had insufficient authentication scopes"
+```
+
+If you hit that, the token was granted without the scope. Re-run the consent
+flow and approve the full permission list — `youtube_auth_status` now reports
+`missing_scopes` so this is visible up front rather than only at call time.
+
+> Adding `youtube.force-ssl` is a **sensitive** scope. If your OAuth app is in
+> "Testing" mode, the channel-owning account must be listed as a **test user**
+> (step 3) or consent will be refused.
+
+### Provisioning a token without filesystem access
+
+The token is self-contained (it carries its own `client_id`, `client_secret` and
+`refresh_token`), so it can be supplied inline instead of as a file — useful when
+the server runs in a container whose `config_dir` you cannot write to:
+
+```bash
+export YOUTUBE_MCP_TOKEN_JSON='{"token":"...","refresh_token":"...","client_id":"...","client_secret":"...","scopes":["..."]}'
+```
+
+This takes priority over `token.json`. Note it puts the refresh token wherever
+your environment variables are stored, so prefer the file when you have access.
+
+
 ## Installation
 
 ```bash
