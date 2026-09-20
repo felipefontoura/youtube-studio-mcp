@@ -1,10 +1,51 @@
 """Video publishing tools — upload, update metadata, thumbnails, delete."""
 
 import os
+import shutil
+import tempfile
+import urllib.error
+import urllib.request
+from contextlib import contextmanager
+from urllib.parse import urlparse
 
 from googleapiclient.http import MediaFileUpload
 
 from youtube_mcp.server import auth, mcp, quota
+
+_DOWNLOAD_CHUNK = 1024 * 1024  # 1 MiB
+
+
+def _is_url(path: str) -> bool:
+    return path.startswith("http://") or path.startswith("https://")
+
+
+@contextmanager
+def _local_file(file_path: str):
+    """Resolve `file_path` to a local, seekable path for MediaFileUpload.
+
+    This server routinely runs on a different host than its caller (e.g. behind a
+    remote MCP gateway), so a bare local path from the caller is often unreachable.
+    `MediaFileUpload`/`MediaIoBaseUpload` need a seekable local file to do a
+    resumable upload (Google's client library calls `.seek()` to retry chunks), so
+    an http(s) `file_path` can't be streamed straight from the response body —
+    it's downloaded to a temp file first instead. The temp file is removed on exit
+    either way.
+    """
+    if not _is_url(file_path):
+        if not os.path.exists(file_path):
+            raise FileNotFoundError(file_path)
+        yield file_path
+        return
+
+    suffix = os.path.splitext(urlparse(file_path).path)[1]
+    fd, tmp_path = tempfile.mkstemp(suffix=suffix)
+    try:
+        with os.fdopen(fd, "wb") as tmp_file:
+            with urllib.request.urlopen(file_path) as response:
+                shutil.copyfileobj(response, tmp_file, _DOWNLOAD_CHUNK)
+        yield tmp_path
+    finally:
+        os.unlink(tmp_path)
 
 
 @mcp.tool()
@@ -22,7 +63,7 @@ def youtube_upload_video(
     Costs 1,600 quota units. Video is uploaded as private by default.
 
     Args:
-        file_path: Absolute path to the video file
+        file_path: Absolute path to the video file, or an http(s) URL to it
         title: Video title (max 100 characters)
         description: Video description (max 5,000 characters)
         tags: List of tags
@@ -30,37 +71,40 @@ def youtube_upload_video(
         privacy_status: "private", "public", or "unlisted"
         publish_at: ISO 8601 datetime to schedule publishing (requires privacy_status="private")
     """
-    if not os.path.exists(file_path):
+    try:
+        with _local_file(file_path) as local_path:
+            quota.consume("video_insert")
+            youtube = auth.build_youtube_service()
+
+            body = {
+                "snippet": {
+                    "title": title[:100],
+                    "description": description[:5000],
+                    "tags": tags or [],
+                    "categoryId": category_id,
+                },
+                "status": {
+                    "privacyStatus": privacy_status,
+                    "selfDeclaredMadeForKids": False,
+                },
+            }
+
+            if publish_at and privacy_status == "private":
+                body["status"]["publishAt"] = publish_at
+
+            media = MediaFileUpload(local_path, resumable=True)
+
+            request = youtube.videos().insert(
+                part="snippet,status",
+                body=body,
+                media_body=media,
+            )
+
+            response = request.execute()
+    except FileNotFoundError:
         return {"error": f"File not found: {file_path}"}
-
-    quota.consume("video_insert")
-    youtube = auth.build_youtube_service()
-
-    body = {
-        "snippet": {
-            "title": title[:100],
-            "description": description[:5000],
-            "tags": tags or [],
-            "categoryId": category_id,
-        },
-        "status": {
-            "privacyStatus": privacy_status,
-            "selfDeclaredMadeForKids": False,
-        },
-    }
-
-    if publish_at and privacy_status == "private":
-        body["status"]["publishAt"] = publish_at
-
-    media = MediaFileUpload(file_path, resumable=True)
-
-    request = youtube.videos().insert(
-        part="snippet,status",
-        body=body,
-        media_body=media,
-    )
-
-    response = request.execute()
+    except (urllib.error.URLError, urllib.error.HTTPError) as e:
+        return {"error": f"Could not download video from {file_path}: {e}"}
 
     return {
         "id": response["id"],
@@ -141,16 +185,20 @@ def youtube_set_thumbnail(video_id: str, file_path: str) -> dict:
 
     Args:
         video_id: YouTube video ID
-        file_path: Absolute path to the thumbnail image (JPEG, PNG, GIF, BMP; max 2MB)
+        file_path: Absolute path to the thumbnail image (JPEG, PNG, GIF, BMP; max 2MB), or an
+            http(s) URL to it
     """
-    if not os.path.exists(file_path):
+    try:
+        with _local_file(file_path) as local_path:
+            quota.consume("thumbnail_set")
+            youtube = auth.build_youtube_service()
+
+            media = MediaFileUpload(local_path)
+            response = youtube.thumbnails().set(videoId=video_id, media_body=media).execute()
+    except FileNotFoundError:
         return {"error": f"File not found: {file_path}"}
-
-    quota.consume("thumbnail_set")
-    youtube = auth.build_youtube_service()
-
-    media = MediaFileUpload(file_path)
-    response = youtube.thumbnails().set(videoId=video_id, media_body=media).execute()
+    except (urllib.error.URLError, urllib.error.HTTPError) as e:
+        return {"error": f"Could not download thumbnail from {file_path}: {e}"}
 
     items = response.get("items", [])
     if items:

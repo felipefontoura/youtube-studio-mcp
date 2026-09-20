@@ -1,5 +1,7 @@
 """Tests for publishing tools with mocked YouTube API."""
 
+import os
+import urllib.error
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -37,6 +39,56 @@ class TestUploadVideo:
 
         result = youtube_upload_video(
             file_path="/nonexistent/video.mp4",
+            title="Test",
+        )
+        assert "error" in result
+        mock_quota.consume.assert_not_called()
+
+    @patch("youtube_mcp.tools.publishing.MediaFileUpload")
+    @patch("youtube_mcp.tools.publishing.auth")
+    @patch("youtube_mcp.tools.publishing.quota")
+    @patch("youtube_mcp.tools.publishing.urllib.request.urlopen")
+    def test_upload_from_url_downloads_to_temp_file(
+        self, mock_urlopen, mock_quota, mock_auth, mock_media
+    ):
+        from youtube_mcp.tools.publishing import youtube_upload_video
+
+        mock_response = MagicMock()
+        mock_response.read.side_effect = [b"fake-video-bytes", b""]
+        mock_urlopen.return_value.__enter__.return_value = mock_response
+
+        mock_yt = MagicMock()
+        mock_auth.build_youtube_service.return_value = mock_yt
+        mock_yt.videos().insert().execute.return_value = {
+            "id": "new123",
+            "snippet": {"title": "My Video"},
+            "status": {"privacyStatus": "private"},
+        }
+
+        result = youtube_upload_video(
+            file_path="https://example.com/video.mp4",
+            title="My Video",
+        )
+
+        assert result["id"] == "new123"
+        mock_urlopen.assert_called_once_with("https://example.com/video.mp4")
+
+        # MediaFileUpload got a local temp path, not the URL — and it's cleaned
+        # up again once the call returns.
+        called_path = mock_media.call_args[0][0]
+        assert called_path != "https://example.com/video.mp4"
+        assert called_path.endswith(".mp4")
+        assert not os.path.exists(called_path)
+
+    @patch("youtube_mcp.tools.publishing.quota")
+    @patch("youtube_mcp.tools.publishing.urllib.request.urlopen")
+    def test_upload_from_url_download_fails(self, mock_urlopen, mock_quota):
+        from youtube_mcp.tools.publishing import youtube_upload_video
+
+        mock_urlopen.side_effect = urllib.error.URLError("boom")
+
+        result = youtube_upload_video(
+            file_path="https://example.com/missing.mp4",
             title="Test",
         )
         assert "error" in result
@@ -107,6 +159,29 @@ class TestSetThumbnail:
         result = youtube_set_thumbnail("vid1", "/tmp/thumb.jpg")
         assert result["updated"] is True
         mock_quota.consume.assert_called_once_with("thumbnail_set")
+
+    @patch("youtube_mcp.tools.publishing.MediaFileUpload")
+    @patch("youtube_mcp.tools.publishing.auth")
+    @patch("youtube_mcp.tools.publishing.quota")
+    @patch("youtube_mcp.tools.publishing.urllib.request.urlopen")
+    def test_set_thumbnail_from_url(self, mock_urlopen, mock_quota, mock_auth, mock_media):
+        from youtube_mcp.tools.publishing import youtube_set_thumbnail
+
+        mock_response = MagicMock()
+        mock_response.read.side_effect = [b"fake-image-bytes", b""]
+        mock_urlopen.return_value.__enter__.return_value = mock_response
+
+        mock_yt = MagicMock()
+        mock_auth.build_youtube_service.return_value = mock_yt
+        mock_yt.thumbnails().set().execute.return_value = {
+            "items": [{"default": {"url": "https://i.ytimg.com/thumb.jpg"}}]
+        }
+
+        result = youtube_set_thumbnail("vid1", "https://example.com/cover.png")
+        assert result["updated"] is True
+        called_path = mock_media.call_args[0][0]
+        assert called_path.endswith(".png")
+        assert not os.path.exists(called_path)
 
 
 class TestDeleteVideo:
