@@ -171,10 +171,14 @@ def youtube_update_video(
     quota.consume("update")
     response = youtube.videos().update(part=parts, body=body).execute()
 
+    # The API only returns the parts we asked for: without privacy_status the
+    # response has no "status", so fall back to the value fetched above.
+    privacy = response.get("status", status).get("privacyStatus")
+
     return {
         "id": response["id"],
         "title": response["snippet"]["title"],
-        "privacy": response["status"]["privacyStatus"],
+        "privacy": privacy,
         "updated": True,
     }
 
