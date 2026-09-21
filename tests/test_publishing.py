@@ -131,6 +131,37 @@ class TestUpdateVideo:
 
     @patch("youtube_mcp.tools.publishing.auth")
     @patch("youtube_mcp.tools.publishing.quota")
+    def test_update_without_privacy_response_has_no_status(self, mock_quota, mock_auth):
+        """The API only returns the parts requested; without privacy_status we
+        request part=snippet, so the update response carries no "status"."""
+        from youtube_mcp.tools.publishing import youtube_update_video
+
+        mock_yt = MagicMock()
+        mock_auth.build_youtube_service.return_value = mock_yt
+
+        mock_yt.videos().list().execute.return_value = {
+            "items": [{
+                "id": "vid1",
+                "snippet": {"title": "Old Title", "description": "Desc"},
+                "status": {"privacyStatus": "unlisted"},
+            }]
+        }
+        mock_yt.videos().update().execute.return_value = {
+            "id": "vid1",
+            "snippet": {"title": "New Title"},
+        }
+
+        result = youtube_update_video(video_id="vid1", title="New Title")
+        assert result["title"] == "New Title"
+        assert result["privacy"] == "unlisted"
+        assert result["updated"] is True
+        mock_yt.videos().update.assert_called_with(
+            part="snippet",
+            body={"id": "vid1", "snippet": {"title": "New Title", "description": "Desc"}},
+        )
+
+    @patch("youtube_mcp.tools.publishing.auth")
+    @patch("youtube_mcp.tools.publishing.quota")
     def test_update_not_found(self, mock_quota, mock_auth):
         from youtube_mcp.tools.publishing import youtube_update_video
 
