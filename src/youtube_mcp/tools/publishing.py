@@ -174,7 +174,8 @@ def youtube_update_video(
     return {
         "id": response["id"],
         "title": response["snippet"]["title"],
-        "privacy": response["status"]["privacyStatus"],
+        # The API returns only the parts sent; a snippet-only update has no status
+        "privacy": response.get("status", status)["privacyStatus"],
         "updated": True,
     }
 

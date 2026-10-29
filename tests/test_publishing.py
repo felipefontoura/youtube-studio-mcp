@@ -131,6 +131,30 @@ class TestUpdateVideo:
 
     @patch("youtube_mcp.tools.publishing.auth")
     @patch("youtube_mcp.tools.publishing.quota")
+    def test_update_snippet_only_response(self, mock_quota, mock_auth):
+        from youtube_mcp.tools.publishing import youtube_update_video
+
+        mock_yt = MagicMock()
+        mock_auth.build_youtube_service.return_value = mock_yt
+        mock_yt.videos().list().execute.return_value = {
+            "items": [{
+                "id": "vid1",
+                "snippet": {"title": "T", "description": "Old", "categoryId": "22"},
+                "status": {"privacyStatus": "public"},
+            }]
+        }
+        # A snippet-only update returns no status part
+        mock_yt.videos().update().execute.return_value = {
+            "id": "vid1",
+            "snippet": {"title": "T", "description": "New"},
+        }
+
+        result = youtube_update_video(video_id="vid1", description="New")
+        assert result["updated"] is True
+        assert result["privacy"] == "public"
+
+    @patch("youtube_mcp.tools.publishing.auth")
+    @patch("youtube_mcp.tools.publishing.quota")
     def test_update_not_found(self, mock_quota, mock_auth):
         from youtube_mcp.tools.publishing import youtube_update_video
 
