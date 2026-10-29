@@ -39,11 +39,13 @@ def format_count(n: int | str) -> str:
     return str(n)
 
 
-def format_video_summary(video: dict) -> dict:
+def format_video_summary(video: dict, full_description: bool = False) -> dict:
     """Extract and format key fields from a YouTube Data API video resource."""
     snippet = video.get("snippet", {})
     stats = video.get("statistics", {})
     content = video.get("contentDetails", {})
+
+    description = snippet.get("description", "")
 
     return {
         "id": video.get("id"),
@@ -54,7 +56,7 @@ def format_video_summary(video: dict) -> dict:
         "views": int(stats.get("viewCount", 0)),
         "likes": int(stats.get("likeCount", 0)),
         "comments": int(stats.get("commentCount", 0)),
-        "description": snippet.get("description", "")[:500],
+        "description": description if full_description else description[:500],
         "tags": snippet.get("tags", []),
         "thumbnail": snippet.get("thumbnails", {}).get("high", {}).get("url"),
         "is_short": _is_likely_short(content.get("duration", "")),

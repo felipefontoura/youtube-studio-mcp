@@ -1,4 +1,4 @@
-"""Comment tools — list, post, and reply to comments."""
+"""Comment tools — list, post, reply to, and edit comments."""
 
 from youtube_mcp.auth import COMMENT_SCOPES
 from youtube_mcp.server import auth, mcp, quota
@@ -40,6 +40,7 @@ def youtube_list_comments(
             "thread_id": item["id"],
             "author": top.get("authorDisplayName"),
             "text": top.get("textDisplay"),
+            "text_original": top.get("textOriginal"),
             "likes": top.get("likeCount", 0),
             "published_at": top.get("publishedAt"),
             "reply_count": item["snippet"].get("totalReplyCount", 0),
@@ -113,4 +114,32 @@ def youtube_reply_to_comment(parent_id: str, text: str) -> dict:
         "parent_id": parent_id,
         "text": response["snippet"].get("textDisplay"),
         "posted": True,
+    }
+
+
+@mcp.tool()
+def youtube_update_comment(comment_id: str, text: str) -> dict:
+    """Edit the text of a comment you wrote. A pinned comment stays pinned.
+
+    Args:
+        comment_id: The comment ID to edit (from youtube_list_comments)
+        text: New comment text
+    """
+    auth.require_scopes(COMMENT_SCOPES, "youtube_update_comment")
+    quota.consume("update")
+    youtube = auth.build_youtube_service()
+
+    body = {
+        "id": comment_id,
+        "snippet": {
+            "textOriginal": text,
+        },
+    }
+
+    response = youtube.comments().update(part="snippet", body=body).execute()
+
+    return {
+        "comment_id": response["id"],
+        "text": response["snippet"].get("textDisplay"),
+        "updated": True,
     }

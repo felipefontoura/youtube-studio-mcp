@@ -128,3 +128,17 @@ class TestFormatVideoSummary:
         assert result["views"] == 0
         assert result["likes"] == 0
         assert result["title"] is None
+
+
+class TestFullDescription:
+    def test_summary_cuts_and_full_keeps(self):
+        from youtube_mcp.utils.formatting import format_video_summary
+
+        video = {
+            "id": "v",
+            "snippet": {"description": "x" * 900},
+            "statistics": {},
+            "contentDetails": {},
+        }
+        assert len(format_video_summary(video)["description"]) == 500
+        assert len(format_video_summary(video, full_description=True)["description"]) == 900

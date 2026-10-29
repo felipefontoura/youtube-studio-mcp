@@ -151,7 +151,8 @@ def youtube_get_video(video_id: str) -> dict:
         return {"error": f"Video not found: {video_id}"}
 
     video = items[0]
-    summary = format_video_summary(video)
+    # Full description: youtube_update_video replaces it whole, so a cut copy would lose text
+    summary = format_video_summary(video, full_description=True)
 
     # Add extra detail fields not in the summary
     status = video.get("status", {})

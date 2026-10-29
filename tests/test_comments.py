@@ -78,3 +78,26 @@ class TestReplyToComment:
         assert result["posted"] is True
         assert result["parent_id"] == "comment1"
         mock_quota.consume.assert_called_once_with("insert")
+
+
+class TestUpdateComment:
+    @patch("youtube_mcp.tools.comments.auth")
+    @patch("youtube_mcp.tools.comments.quota")
+    def test_update(self, mock_quota, mock_auth):
+        from youtube_mcp.tools.comments import youtube_update_comment
+
+        mock_yt = MagicMock()
+        mock_auth.build_youtube_service.return_value = mock_yt
+        mock_yt.comments().update().execute.return_value = {
+            "id": "comment1",
+            "snippet": {"textDisplay": "New text"},
+        }
+
+        result = youtube_update_comment("comment1", "New text")
+        assert result["updated"] is True
+        assert result["comment_id"] == "comment1"
+        mock_yt.comments().update.assert_called_with(
+            part="snippet",
+            body={"id": "comment1", "snippet": {"textOriginal": "New text"}},
+        )
+        mock_quota.consume.assert_called_once_with("update")
